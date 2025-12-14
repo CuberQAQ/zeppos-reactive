@@ -1,187 +1,176 @@
+const STALE = 1;
+const CLEAN = 0;
 class ZeppReactive {
-    activeEffect;
-    targetMap;
-    constructor() {
-        this.activeEffect = null;
-        this.targetMap = new WeakMap();
+    activeEffect = null;
+    targetMap = new WeakMap();
+    Updates = null;
+    reactiveMap = new WeakMap();
+    effect(fn, initialValue) {
+        const eff = new ReactiveEffect(fn, this);
+        eff.value = initialValue;
+        eff.run();
+        return eff;
     }
-    track(target, key) {
-        if (this.activeEffect) {
-            let depsMap = this.targetMap.get(target);
-            if (!depsMap) {
-                depsMap = new Map();
-                this.targetMap.set(target, depsMap);
-            }
-            let deps = depsMap.get(key);
-            if (!deps) {
-                deps = new Set();
-                depsMap.set(key, deps);
-            }
-            deps.add(this.activeEffect);
+    memo(fn) {
+        const eff = new ReactiveEffect(fn, this, true);
+        eff.run();
+        return () => eff.value;
+    }
+    reactive(obj, options) {
+        if (this.reactiveMap.has(obj)) {
+            return this.reactiveMap.get(obj);
+        }
+        const system = this;
+        return new Proxy(obj, {
+            get(target, key, receiver) {
+                const res = Reflect.get(target, key, receiver);
+                if (system.activeEffect) {
+                    system.track(target, key, system.activeEffect);
+                }
+                if (options?.deep && typeof res === "object" && res !== null) {
+                    return system.reactive(res, options);
+                }
+                return res;
+            },
+            set(target, key, value, receiver) {
+                const old = target[key];
+                const ok = Reflect.set(target, key, value, receiver);
+                if (!Object.is(old, value)) {
+                    system.trigger(target, key);
+                }
+                return ok;
+            },
+        });
+    }
+    track(target, key, eff) {
+        let depsMap = this.targetMap.get(target);
+        if (!depsMap) {
+            depsMap = new Map();
+            this.targetMap.set(target, depsMap);
+        }
+        let dep = depsMap.get(key);
+        if (!dep) {
+            dep = new Set();
+            depsMap.set(key, dep);
+        }
+        if (!dep.has(eff)) {
+            dep.add(eff);
+            eff.deps.push(dep); // 反向记录
+        }
+    }
+    untrack(fn) {
+        const prev = this.activeEffect;
+        this.activeEffect = null;
+        try {
+            return fn();
+        }
+        finally {
+            this.activeEffect = prev;
         }
     }
     trigger(target, key) {
         const depsMap = this.targetMap.get(target);
         if (!depsMap)
             return;
-        const deps = depsMap.get(key);
-        if (deps) {
-            deps.forEach((effect) => {
-                effect();
-            });
+        const dep = depsMap.get(key);
+        if (!dep)
+            return;
+        for (const eff of dep) {
+            if (eff.state !== STALE) {
+                eff.state = STALE;
+                this.queueUpdate(eff);
+            }
         }
+        this.flushUpdates();
     }
-    reactive(target) {
-        if (typeof target !== "object" || target === null) {
-            return target;
-        }
-        if (target.__isReactive) {
-            return target;
-        }
-        const system = this;
-        const proxy = new Proxy(target, {
-            get(obj, key, receiver) {
-                if (key !== "__isReactive") {
-                    system.track(obj, key);
-                }
-                const result = Reflect.get(obj, key, receiver);
-                if (result && typeof result === "object") {
-                    return system.reactive(result);
-                }
-                return result;
-            },
-            set(obj, key, value, receiver) {
-                const oldValue = obj[key];
-                const result = Reflect.set(obj, key, value, receiver);
-                if (!Object.is(oldValue, value)) {
-                    system.trigger(obj, key);
-                }
-                return result;
-            },
-        });
-        proxy.__isReactive = true;
-        return proxy;
+    queueUpdate(eff) {
+        if (!this.Updates)
+            this.Updates = [];
+        this.Updates.push(eff);
     }
-    memo(fn, options) {
-        const system = this;
-        let value;
-        let initialized = false;
-        const equal = options?.equals ?? Object.is;
-        const runner = () => {
-            const newValue = fn();
-            if (!initialized || !equal(newValue, value)) {
-                value = newValue;
-                initialized = true;
-                system.trigger(getter, "value");
-            }
-        };
-        this.effect(runner);
-        function getter() {
-            if (system.activeEffect) {
-                system.track(getter, "value");
-            }
-            return value;
+    flushUpdates() {
+        if (!this.Updates)
+            return;
+        const queue = this.Updates;
+        this.Updates = null;
+        for (const eff of queue) {
+            if (eff.state === STALE)
+                eff.run();
         }
-        return getter;
-    }
-    effect(fn, options) {
-        const system = this;
-        let setup = false;
-        const effectFn = () => {
-            // 保存原 effect，总而允许多层嵌套 effect
-            const activeEffect = system.activeEffect;
-            try {
-                system.activeEffect = effectFn;
-                if (setup) {
-                    options?.scheduler ? options.scheduler() : fn();
-                }
-                else {
-                    setup = true;
-                    fn();
-                }
-            }
-            finally {
-                system.activeEffect = activeEffect;
-            }
-        };
-        effectFn();
-        return effectFn;
     }
     watch(source, cb) {
-        let setup = false;
         let oldValue;
-        this.effect(() => {
-            if (!setup) {
-                oldValue = source();
-                setup = true;
+        let initialized = false;
+        // 用 effect 包裹 source
+        const eff = this.effect(() => {
+            const newValue = source();
+            if (!initialized) {
+                oldValue = newValue;
+                initialized = true;
             }
             else {
-                const newValue = source();
-                if (newValue !== oldValue) {
-                    // 浅层比较，未来可能需要深层
-                    cb(newValue, oldValue);
+                if (!Object.is(newValue, oldValue)) {
+                    this.untrack(() => cb(newValue, oldValue));
                     oldValue = newValue;
                 }
             }
         });
+        return () => {
+            eff.stop();
+        };
     }
     computed(getter) {
-        let system = this;
+        const system = this;
         let value;
         let dirty = true;
-        let setup = false;
-        let beDepended = false;
-        return {
+        let initialized = false;
+        const KEY = Symbol("computed:value");
+        // runner 用来更新缓存值
+        const runner = new ReactiveEffect(() => {
+            const newVal = getter();
+            if (!initialized || !Object.is(newVal, value)) {
+                value = newVal;
+                initialized = true;
+                dirty = false;
+                system.trigger(wrapper, KEY);
+            }
+        }, this, true);
+        // 初次运行
+        runner.run();
+        // 包装对象，外部通过 .value 访问
+        const wrapper = {
             get value() {
-                if (!setup) {
-                    system.effect(() => {
-                        if (!setup) {
-                            value = getter();
-                            dirty = false;
-                            setup = true;
-                        }
-                        else {
-                            if (beDepended) {
-                                value = getter();
-                                system.trigger(this, "value");
-                            }
-                            else {
-                                dirty = true;
-                            }
-                        }
-                    });
-                }
                 if (dirty) {
-                    value = getter();
+                    runner.run();
                     dirty = false;
                 }
                 if (system.activeEffect) {
-                    system.track(this, "value");
-                    beDepended = true;
+                    system.track(wrapper, KEY, system.activeEffect);
                 }
                 return value;
             },
         };
+        return wrapper;
     }
     // simple and high performance
     merge(obj1, obj2) {
         return new Proxy({}, {
             has(_, key) {
-                return key in obj1 || key in obj2 || key in _;
+                return key in obj2 || key in obj1 || key in _;
             },
             get(_, key) {
-                return key in obj1
-                    ? obj1[key]
-                    : key in obj2
-                        ? obj2[key]
+                return key in obj2
+                    ? obj2[key]
+                    : key in obj1
+                        ? obj1[key]
                         : _[key];
             },
             set(_, key, value) {
-                if (key in obj1) {
-                    obj1[key] = value;
-                }
-                else if (key in obj2) {
+                if (key in obj2) {
                     obj2[key] = value;
+                }
+                else if (key in obj1) {
+                    obj1[key] = value;
                 }
                 else {
                     _[key] = value;
@@ -190,35 +179,28 @@ class ZeppReactive {
                 return true;
             },
             ownKeys(_) {
-                return Reflect.ownKeys(obj1).concat(Reflect.ownKeys(obj2), Reflect.ownKeys(_));
+                return Reflect.ownKeys(obj2).concat(Reflect.ownKeys(obj1), Reflect.ownKeys(_));
             },
         });
     }
     // solid js compatible
     mergeProps(...sources) {
         const system = this;
-        // 如果传入的是函数（accessor），用 memo 包装成响应式 getter
-        const normalized = sources.map((s) => {
-            if (typeof s === "function") {
-                return system.memo(s);
-            }
-            return s;
-        });
+        // 将函数源包装为 memo，以便惰性访问时能订阅变化
+        const normalized = sources.map((s) => typeof s === "function" ? system.memo(s) : s);
         return new Proxy({}, {
             get(_, key) {
-                // 从最后一个对象开始查找，后面的覆盖前面的
                 for (let i = normalized.length - 1; i >= 0; i--) {
                     const source = normalized[i];
                     if (source && key in source) {
                         const value = source[key];
-                        // 如果是 accessor（函数），调用它
-                        return typeof value === "function" ? value() : value;
+                        // return typeof value === "function" ? value() : value; // TODO
+                        return value;
                     }
                 }
-                return undefined;
+                return _[key];
             },
             set(_, key, value) {
-                // 写回到最后一个拥有该属性的对象
                 for (let i = normalized.length - 1; i >= 0; i--) {
                     const source = normalized[i];
                     if (source && key in source) {
@@ -226,12 +208,18 @@ class ZeppReactive {
                         return true;
                     }
                 }
-                // 如果所有源对象都没有这个 key，就直接写到代理对象上
                 _[key] = value;
                 return true;
             },
             has(_, key) {
-                return normalized.some((s) => s && key in s) || key in _;
+                if (key in _)
+                    return true;
+                for (let i = 0; i < normalized.length; i++) {
+                    const s = normalized[i];
+                    if (s && key in s)
+                        return true;
+                }
+                return false;
             },
             ownKeys(_) {
                 const keys = [];
@@ -239,10 +227,49 @@ class ZeppReactive {
                     keys.push(...Reflect.ownKeys(normalized[i]));
                 }
                 return [...new Set(keys.concat(Reflect.ownKeys(_)))];
-            }
+            },
         });
     }
+    static instance;
 }
+export class ReactiveEffect {
+    fn;
+    system;
+    pure;
+    value;
+    state = CLEAN;
+    deps = []; // 记录自己所在的依赖集合
+    active = true;
+    constructor(fn, system, pure = false) {
+        this.fn = fn;
+        this.system = system;
+        this.pure = pure;
+    }
+    run() {
+        if (!this.active)
+            return; // 已 stop 的 effect 不再运行
+        const prev = this.system.activeEffect;
+        this.system.activeEffect = this;
+        try {
+            this.value = this.fn(this.value);
+            this.state = CLEAN;
+        }
+        finally {
+            this.system.activeEffect = prev;
+        }
+    }
+    stop() {
+        if (this.active) {
+            // 从所有依赖集合中移除自己
+            for (const dep of this.deps) {
+                dep.delete(this);
+            }
+            this.deps.length = 0;
+            this.active = false;
+        }
+    }
+}
+// 绑定导出
 const zeppReactive = new ZeppReactive();
 export const reactive = zeppReactive.reactive.bind(zeppReactive);
 export const effect = zeppReactive.effect.bind(zeppReactive);
@@ -251,4 +278,6 @@ export const merge = zeppReactive.merge.bind(zeppReactive);
 export const watch = zeppReactive.watch.bind(zeppReactive);
 export const memo = zeppReactive.memo.bind(zeppReactive);
 export const mergeProps = zeppReactive.mergeProps.bind(zeppReactive);
+export const untrack = zeppReactive.untrack.bind(zeppReactive);
+ZeppReactive.instance = zeppReactive;
 export { ZeppReactive };
