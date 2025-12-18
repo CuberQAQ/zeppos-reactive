@@ -2,6 +2,8 @@ const STALE = 1;
 const CLEAN = 0;
 class ZeppReactive {
     activeEffect = null;
+    globalScope = [];
+    activeScope = this.globalScope;
     targetMap = new WeakMap();
     Updates = null;
     reactiveMap = new WeakMap();
@@ -12,9 +14,32 @@ class ZeppReactive {
         return eff;
     }
     memo(fn) {
-        const eff = new ReactiveEffect(fn, this, true);
+        const system = this;
+        let value;
+        let initialized = false;
+        // computation runner
+        const eff = new ReactiveEffect(() => {
+            const newVal = fn();
+            if (!initialized) {
+                value = newVal;
+                initialized = true;
+            }
+            else if (!Object.is(newVal, value)) {
+                value = newVal;
+                // 通知依赖这个 memo 的 effect
+                system.trigger(wrapper, "value");
+            }
+            return value;
+        }, this, true);
         eff.run();
-        return () => eff.value;
+        const wrapper = () => {
+            // 如果当前有活跃 effect，就 track 这个 memo
+            if (system.activeEffect) {
+                system.track(wrapper, "value", system.activeEffect);
+            }
+            return value;
+        };
+        return wrapper;
     }
     reactive(obj, options) {
         if (this.reactiveMap.has(obj)) {
@@ -66,6 +91,16 @@ class ZeppReactive {
         }
         finally {
             this.activeEffect = prev;
+        }
+    }
+    scoped(fn, scoped) {
+        let prev = this.activeScope;
+        this.activeScope = scoped;
+        try {
+            return fn();
+        }
+        finally {
+            this.activeScope = prev;
         }
     }
     trigger(target, key) {
@@ -231,6 +266,13 @@ class ZeppReactive {
         });
     }
     static instance;
+    clear() {
+        this.activeEffect = null;
+        this.globalScope.forEach((e) => e.stop());
+        this.activeScope = null;
+        this.reactiveMap = null;
+        this.targetMap = null;
+    }
 }
 export class ReactiveEffect {
     fn;
@@ -240,10 +282,26 @@ export class ReactiveEffect {
     state = CLEAN;
     deps = []; // 记录自己所在的依赖集合
     active = true;
+    scope;
+    static __cnt = 0;
+    static __nextTickTimer = null;
+    static __nextUnscopedCnt = 1;
     constructor(fn, system, pure = false) {
         this.fn = fn;
         this.system = system;
         this.pure = pure;
+        ReactiveEffect.__cnt++;
+        if (!ReactiveEffect.__nextTickTimer) {
+            ReactiveEffect.__nextTickTimer = setTimeout(() => {
+                ReactiveEffect.__nextTickTimer = null;
+                console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+            }, 300);
+        }
+        this.scope = system.activeScope;
+        if (this.scope === system.globalScope) {
+            console.log(`[ZeppReactive] WARN: effect created outside of scope (${ReactiveEffect.__nextUnscopedCnt++}). This is not recommended. Please use scoped effect: ${fn.name || "[anonymous]"}.`);
+        }
+        this.scope.push(this);
     }
     run() {
         if (!this.active)
@@ -251,7 +309,7 @@ export class ReactiveEffect {
         const prev = this.system.activeEffect;
         this.system.activeEffect = this;
         try {
-            this.value = this.fn(this.value);
+            this.value = this.system.scoped(() => this.fn(this.value), this.scope);
             this.state = CLEAN;
         }
         finally {
@@ -266,6 +324,13 @@ export class ReactiveEffect {
             }
             this.deps.length = 0;
             this.active = false;
+            ReactiveEffect.__cnt--;
+        }
+        if (!ReactiveEffect.__nextTickTimer) {
+            ReactiveEffect.__nextTickTimer = setTimeout(() => {
+                ReactiveEffect.__nextTickTimer = null;
+                console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+            }, 300);
         }
     }
 }
@@ -279,5 +344,6 @@ export const watch = zeppReactive.watch.bind(zeppReactive);
 export const memo = zeppReactive.memo.bind(zeppReactive);
 export const mergeProps = zeppReactive.mergeProps.bind(zeppReactive);
 export const untrack = zeppReactive.untrack.bind(zeppReactive);
+export const scoped = zeppReactive.scoped.bind(zeppReactive);
 ZeppReactive.instance = zeppReactive;
 export { ZeppReactive };

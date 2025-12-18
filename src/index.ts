@@ -9,6 +9,9 @@ type UnionToIntersection<U> = (U extends any ? (k: U) => void : never) extends (
 
 class ZeppReactive {
   activeEffect: ReactiveEffect<unknown> | null = null;
+  globalScope: ReactiveEffect<any>[] = [];
+  activeScope: ReactiveEffect<unknown>[] = this.globalScope;
+
   targetMap = new WeakMap<
     object,
     Map<string | symbol, Set<ReactiveEffect<unknown>>>
@@ -27,14 +30,47 @@ class ZeppReactive {
   }
 
   public memo<T>(fn: () => T): () => T {
-    const eff = new ReactiveEffect(fn, this, true);
+    const system = this;
+    let value: T;
+    let initialized = false;
+
+    // computation runner
+    const eff = new ReactiveEffect(
+      () => {
+        const newVal = fn();
+        if (!initialized) {
+          value = newVal;
+          initialized = true;
+        } else if (!Object.is(newVal, value)) {
+          value = newVal;
+          // 通知依赖这个 memo 的 effect
+          system.trigger(wrapper, "value");
+        }
+        return value;
+      },
+      this,
+      true
+    );
+
     eff.run();
-    return () => eff.value;
+
+    const wrapper = () => {
+      // 如果当前有活跃 effect，就 track 这个 memo
+      if (system.activeEffect) {
+        system.track(wrapper, "value", system.activeEffect);
+      }
+      return value;
+    };
+
+    return wrapper;
   }
 
-  public reactive<T extends object>(obj: T, options?: {
-    deep?: boolean
-  }): T {
+  public reactive<T extends object>(
+    obj: T,
+    options?: {
+      deep?: boolean;
+    }
+  ): T {
     if (this.reactiveMap.has(obj)) {
       return this.reactiveMap.get(obj);
     }
@@ -90,6 +126,16 @@ class ZeppReactive {
       return fn();
     } finally {
       this.activeEffect = prev;
+    }
+  }
+
+  public scoped<T>(fn: () => T, scoped: ReactiveEffect<unknown>[]): T {
+    let prev = this.activeScope;
+    this.activeScope = scoped;
+    try {
+      return fn();
+    } finally {
+      this.activeScope = prev;
     }
   }
 
@@ -280,6 +326,14 @@ class ZeppReactive {
     }) as UnionToIntersection<T[number]>;
   }
   static instance: ZeppReactive;
+
+  clear() {
+    this.activeEffect = null;
+    this.globalScope.forEach((e) => e.stop());
+    this.activeScope = null as any;
+    this.reactiveMap = null as any;
+    this.targetMap = null as any;
+  }
 }
 
 export class ReactiveEffect<T> {
@@ -287,19 +341,42 @@ export class ReactiveEffect<T> {
   public state = CLEAN;
   public deps: Set<ReactiveEffect<any>>[] = []; // 记录自己所在的依赖集合
   public active = true;
+  public scope: ReactiveEffect<any>[];
+  static __cnt = 0;
+  static __nextTickTimer: unknown | null = null;
+  static __nextUnscopedCnt = 1;
 
   constructor(
     public fn: (prev: T) => T,
     private system: ZeppReactive,
     private pure = false
-  ) {}
+  ) {
+    ReactiveEffect.__cnt++;
+    if (!ReactiveEffect.__nextTickTimer) {
+      ReactiveEffect.__nextTickTimer = setTimeout(() => {
+        ReactiveEffect.__nextTickTimer = null;
+
+        console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+      }, 300);
+    }
+
+    this.scope = system.activeScope;
+    if (this.scope === system.globalScope) {
+      console.log(
+        `[ZeppReactive] WARN: effect created outside of scope (${ReactiveEffect.__nextUnscopedCnt++}). This is not recommended. Please use scoped effect: ${
+          fn.name || "[anonymous]"
+        }.`
+      );
+    }
+    this.scope.push(this as ReactiveEffect<unknown>);
+  }
 
   run() {
     if (!this.active) return; // 已 stop 的 effect 不再运行
     const prev = this.system.activeEffect;
     this.system.activeEffect = this as ReactiveEffect<unknown>;
     try {
-      this.value = this.fn(this.value);
+      this.value = this.system.scoped(() => this.fn(this.value), this.scope);
       this.state = CLEAN;
     } finally {
       this.system.activeEffect = prev;
@@ -314,6 +391,16 @@ export class ReactiveEffect<T> {
       }
       this.deps.length = 0;
       this.active = false;
+
+      ReactiveEffect.__cnt--;
+    }
+
+    if (!ReactiveEffect.__nextTickTimer) {
+      ReactiveEffect.__nextTickTimer = setTimeout(() => {
+        ReactiveEffect.__nextTickTimer = null;
+
+        console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+      }, 300);
     }
   }
 }
@@ -329,6 +416,7 @@ export const watch = zeppReactive.watch.bind(zeppReactive);
 export const memo = zeppReactive.memo.bind(zeppReactive);
 export const mergeProps = zeppReactive.mergeProps.bind(zeppReactive);
 export const untrack = zeppReactive.untrack.bind(zeppReactive);
+export const scoped = zeppReactive.scoped.bind(zeppReactive);
 
 ZeppReactive.instance = zeppReactive;
 
