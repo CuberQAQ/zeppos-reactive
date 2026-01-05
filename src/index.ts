@@ -342,8 +342,8 @@ export class ReactiveEffect<T> {
   public deps: Set<ReactiveEffect<any>>[] = []; // 记录自己所在的依赖集合
   public active = true;
   public scope: ReactiveEffect<any>[];
-  static __cnt = 0;
-  static __nextTickTimer: unknown | null = null;
+  // static __cnt = 0;
+  // static __nextTickTimer: unknown | null = null;
   static __nextUnscopedCnt = 1;
 
   constructor(
@@ -351,14 +351,14 @@ export class ReactiveEffect<T> {
     private system: ZeppReactive,
     private pure = false
   ) {
-    ReactiveEffect.__cnt++;
-    if (!ReactiveEffect.__nextTickTimer) {
-      ReactiveEffect.__nextTickTimer = setTimeout(() => {
-        ReactiveEffect.__nextTickTimer = null;
+    // ReactiveEffect.__cnt++;
+    // if (!ReactiveEffect.__nextTickTimer) {
+    //   ReactiveEffect.__nextTickTimer = setTimeout(() => {
+    //     ReactiveEffect.__nextTickTimer = null;
 
-        console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
-      }, 300);
-    }
+    //     // console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+    //   }, 300);
+    // }
 
     this.scope = system.activeScope;
     if (this.scope === system.globalScope) {
@@ -392,16 +392,16 @@ export class ReactiveEffect<T> {
       this.deps.length = 0;
       this.active = false;
 
-      ReactiveEffect.__cnt--;
+      // ReactiveEffect.__cnt--;
     }
 
-    if (!ReactiveEffect.__nextTickTimer) {
-      ReactiveEffect.__nextTickTimer = setTimeout(() => {
-        ReactiveEffect.__nextTickTimer = null;
+    // if (!ReactiveEffect.__nextTickTimer) {
+    //   ReactiveEffect.__nextTickTimer = setTimeout(() => {
+    //     ReactiveEffect.__nextTickTimer = null;
 
-        console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
-      }, 300);
-    }
+    //     // console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+    //   }, 300);
+    // }
   }
 }
 

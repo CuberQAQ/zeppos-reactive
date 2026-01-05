@@ -283,20 +283,20 @@ export class ReactiveEffect {
     deps = []; // 记录自己所在的依赖集合
     active = true;
     scope;
-    static __cnt = 0;
-    static __nextTickTimer = null;
+    // static __cnt = 0;
+    // static __nextTickTimer: unknown | null = null;
     static __nextUnscopedCnt = 1;
     constructor(fn, system, pure = false) {
+        // ReactiveEffect.__cnt++;
+        // if (!ReactiveEffect.__nextTickTimer) {
+        //   ReactiveEffect.__nextTickTimer = setTimeout(() => {
+        //     ReactiveEffect.__nextTickTimer = null;
         this.fn = fn;
         this.system = system;
         this.pure = pure;
-        ReactiveEffect.__cnt++;
-        if (!ReactiveEffect.__nextTickTimer) {
-            ReactiveEffect.__nextTickTimer = setTimeout(() => {
-                ReactiveEffect.__nextTickTimer = null;
-                console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
-            }, 300);
-        }
+        //     // console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+        //   }, 300);
+        // }
         this.scope = system.activeScope;
         if (this.scope === system.globalScope) {
             console.log(`[ZeppReactive] WARN: effect created outside of scope (${ReactiveEffect.__nextUnscopedCnt++}). This is not recommended. Please use scoped effect: ${fn.name || "[anonymous]"}.`);
@@ -324,14 +324,14 @@ export class ReactiveEffect {
             }
             this.deps.length = 0;
             this.active = false;
-            ReactiveEffect.__cnt--;
+            // ReactiveEffect.__cnt--;
         }
-        if (!ReactiveEffect.__nextTickTimer) {
-            ReactiveEffect.__nextTickTimer = setTimeout(() => {
-                ReactiveEffect.__nextTickTimer = null;
-                console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
-            }, 300);
-        }
+        // if (!ReactiveEffect.__nextTickTimer) {
+        //   ReactiveEffect.__nextTickTimer = setTimeout(() => {
+        //     ReactiveEffect.__nextTickTimer = null;
+        //     // console.log(`[Reactive] active effect count: ${ReactiveEffect.__cnt}`);
+        //   }, 300);
+        // }
     }
 }
 // 绑定导出
